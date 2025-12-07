@@ -1,3 +1,5 @@
+import { Logo } from '@/components/logo'
+
 export function Footer() {
   const currentYear = new Date().getFullYear()
 
@@ -11,9 +13,9 @@ export function Footer() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           {/* Brand Section */}
           <div className="col-span-1 md:col-span-2">
-            <h2 className="text-xl font-bold text-red-600 dark:text-red-500 mb-4">
-              VaultsIQ
-            </h2>
+            <div className="mb-4">
+              <Logo variant="full" size="md" className="text-white" />
+            </div>
             <p className="text-gray-400 dark:text-gray-500 text-sm max-w-md">
               Decentralized vault platform enabling users to create multiple
               ERC-4626 compliant vaults for automated yield generation across
