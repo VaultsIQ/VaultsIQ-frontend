@@ -26,3 +26,12 @@ contract VaultFactory is Ownable, ReentrancyGuard {
     error InvalidBio(string reason);
     error UserNotRegistered(address user);
 
+    // Events
+    event UserRegistered(address indexed user, uint256 timestamp);
+
+    /**
+     * @dev Constructor sets the contract owner
+     * @param initialOwner Address of the contract owner
+     */
+    constructor(address initialOwner) Ownable(initialOwner) {}
+
