@@ -55,7 +55,7 @@ npx hardhat compile
 npx hardhat test
 
 # Deploy to Base Sepolia
-npx hardhat run scripts/deploy.js --network base-sepolia
+npx hardhat run scripts/deploy.js --network baseSepolia
 ```
 
 ## Project Structure
@@ -161,19 +161,19 @@ ETHERSCAN_API_KEY=your_etherscan_api_key
 ### Deploy VaultFactory
 
 ```bash
-npx hardhat run scripts/deploy.js --network base-sepolia
+npx hardhat run scripts/deploy.js --network baseSepolia
 ```
 
 ### Initialize VaultFactory
 
 ```bash
-npx hardhat run scripts/initialize.js --network base-sepolia
+npx hardhat run scripts/initialize.js --network baseSepolia
 ```
 
 ### Verify Contracts
 
 ```bash
-npx hardhat verify --network base-sepolia <CONTRACT_ADDRESS> <CONSTRUCTOR_ARGS>
+npx hardhat verify --network baseSepolia <CONTRACT_ADDRESS> <CONSTRUCTOR_ARGS>
 ```
 
 ## Testing
