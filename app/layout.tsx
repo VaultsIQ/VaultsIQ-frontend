@@ -20,6 +20,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "VaultsIQ - Decentralized Vault Platform",
   description: "Create multiple ERC-4626 compliant vaults for automated yield generation",
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/logo-icon.svg', type: 'image/svg+xml' },
+    ],
+    apple: '/logo-icon.svg',
+  },
 };
 
 export default function RootLayout({
