@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../interfaces/IERC4626.sol";
 
@@ -14,15 +14,15 @@ import "../interfaces/IERC4626.sol";
 contract MockERC4626Vault is ERC20, IERC4626 {
     using SafeERC20 for IERC20;
 
-    IERC20 private immutable _asset;
+    IERC20Metadata private immutable _asset;
     uint8 private immutable _decimals;
 
     constructor(address asset_) ERC20("Mock Vault Share", "MVS") {
-        _asset = IERC20(asset_);
-        _decimals = IERC20(asset_).decimals();
+        _asset = IERC20Metadata(asset_);
+        _decimals = _asset.decimals();
     }
 
-    function decimals() public view virtual override(ERC20, IERC20Metadata) returns (uint8) {
+    function decimals() public view virtual override returns (uint8) {
         return _decimals;
     }
 
