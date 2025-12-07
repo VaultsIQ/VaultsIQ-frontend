@@ -1,0 +1,10 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Layers icon representing multiple vaults -->
+  <path d="M16 4L4 10L16 16L28 10L16 4Z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M4 16L16 22L28 16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M4 22L16 28L28 22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Brain icon overlay for IQ -->
+  <circle cx="24" cy="8" r="4" fill="currentColor" opacity="0.9"/>
+  <path d="M22 8C22 7.5 22.5 7 23 7C23.5 7 24 7.5 24 8C24 8.5 23.5 9 23 9C22.5 9 22 8.5 22 8Z" fill="white"/>
+</svg>
+
