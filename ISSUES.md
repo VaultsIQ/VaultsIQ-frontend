@@ -4,6 +4,39 @@ This file contains all GitHub issues for the VaultsIQ frontend. Each issue is re
 
 ## ✅ Completed Issues
 
+### Issue #2: Wagmi Configuration & Provider Setup
+
+**Status:** ✅ COMPLETED  
+**Completed Date:** 2024
+
+**Labels:** `frontend`, `infrastructure`, `web3`  
+
+**Priority:** HIGH
+
+**Description:**
+
+Create `config/wagmi.ts` and `config/adapter.ts` to expose providers and signers to the app. Configure for Base Sepolia testnet with proper RPC endpoints.
+
+**Acceptance Criteria:**
+
+- [x] Wagmi config configured for Base Sepolia
+- [x] Hooks/components can get an ethers provider from the adapter
+- [x] Hooks/components can get an ethers signer from the adapter
+- [x] `walletClientToSigner` utility function works
+- [x] `publicClientToProvider` utility function works
+- [x] RPC endpoints properly configured
+
+**Implementation Notes:**
+
+- Base Sepolia RPC: `https://sepolia.base.org` ✅
+- Chain ID: 84532 ✅
+- Utilities handle viem to ethers conversions correctly ✅
+- Created `hooks/useEthersProvider.ts` for getting ethers provider ✅
+- Created `hooks/useEthersSigner.ts` for getting ethers signer ✅
+- RPC endpoint explicitly configured in wagmi config ✅
+
+---
+
 ### Issue #1: Wallet Integration — Reown AppKit + Wagmi
 
 **Status:** ✅ COMPLETED  
@@ -41,35 +74,6 @@ Add wallet connection using Reown AppKit (WalletConnect) + Wagmi. Provide a `Nav
 ---
 
 ## ❌ Pending Issues
-
-### Issue #2: Wagmi Configuration & Provider Setup
-
-**Status:** ❌ PENDING  
-
-**Labels:** `frontend`, `infrastructure`, `web3`  
-
-**Priority:** HIGH
-
-**Description:**
-
-Create `config/wagmi.ts` and `config/adapter.ts` to expose providers and signers to the app. Configure for Base Sepolia testnet with proper RPC endpoints.
-
-**Acceptance Criteria:**
-
-- [ ] Wagmi config configured for Base Sepolia
-- [ ] Hooks/components can get an ethers provider from the adapter
-- [ ] Hooks/components can get an ethers signer from the adapter
-- [ ] `walletClientToSigner` utility function works
-- [ ] `publicClientToProvider` utility function works
-- [ ] RPC endpoints properly configured
-
-**Implementation Notes:**
-
-- Base Sepolia RPC: `https://sepolia.base.org`
-- Chain ID: 84532
-- Utilities handle viem to ethers conversions correctly
-
----
 
 ### Issue #3: Styling, Accessibility & Responsiveness
 
