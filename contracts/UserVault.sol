@@ -1,196 +1,136 @@
-// SPDX-License-Identifier: MIT
+//// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
+
+/**
+ * @title UserVault
+ * @notice Core ERC-4626-compliant tokenized vault with ERC20 share tokens.
+ * @dev
+ * - Implements ERC-4626 interface for deposits, withdrawals, minting, and redemption
+ * - Uses OpenZeppelin ERC20 for share tokens
+ * - Rounding:
+ *    - convertToShares/previewDeposit: round down (user gets at most expected shares)
+ *    - previewMint: round up (user provides at least required assets)
+ *    - previewWithdraw: round up (burn at least enough shares to cover assets)
+ *    - convertToAssets/previewRedeem: round down (user receives at most expected assets)
+ * - First deposit mints shares at 1:1 with assets (decimals matched to underlying)
+ * - Owner can set an optional deposit limit (cap) on total managed assets
+ */
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
+
 import "./interfaces/IERC4626.sol";
 
-/**
- * @title UserVault
- * @author VaultsIQ
- * @dev ERC-4626 compliant vault contract for managing user assets
- * @notice This contract implements the ERC-4626 standard for tokenized vaults
- * 
- * Features:
- * - Full ERC-4626 standard compliance
- * - Deposit, withdraw, mint, and redeem operations
- * - Protocol allocation management (Aave, Compound)
- * - Pause/unpause functionality for emergency stops
- * - Owner access control for vault management
- * - Share-based ownership with ERC-20 tokens
- * 
- * Security:
- * - Reentrancy protection on all state-changing functions
- * - Access control via OpenZeppelin Ownable
- * - Pausable for emergency stops
- * - Input validation on all user inputs
- * - Custom errors for gas optimization
- * 
- * @custom:security-contact security@vaultsiq.com
- */
-contract UserVault is ERC20, IERC4626, Ownable, ReentrancyGuard, Pausable {
+contract UserVault is ERC20, IERC4626, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // Underlying asset token
+    /// @dev Underlying ERC20 asset managed by this vault
     IERC20 private immutable _asset;
     IERC20Metadata private immutable _assetMetadata;
-    uint8 private immutable _decimals;
 
-    // Factory address for protocol lookups
-    address public immutable factory;
+    /// @dev Share token decimals mirror the underlying asset's decimals
+    uint8 private immutable _vaultDecimals;
 
-    // Protocol allocation tracking
-    mapping(string => uint256) public protocolAllocations;
-    mapping(string => uint256) public protocolDeployedAmounts;
-    string[] private _supportedProtocols;
+    /// @notice Maximum total assets the vault is allowed to manage (owner-controlled)
+    /// @dev Defaults to unlimited. If set below current totalAssets, new deposits/mints will be blocked.
+    uint256 public depositLimit;
 
-    // Custom errors for gas optimization
-    error InvalidAmount();
-    error InsufficientAssets();
-    error InsufficientShares();
-    error InvalidProtocol();
-    error AllocationExceedsAssets();
-    error ProtocolNotConfigured();
-    error ZeroAddress();
-    error InvalidReceiver();
-    error InvalidOwner();
-    error ExceedsMaxDeposit();
-    error ExceedsMaxMint();
-    error ExceedsMaxWithdraw();
-    error ExceedsMaxRedeem();
+    /// @notice Emitted when the deposit limit is updated by the owner
+    event DepositLimitUpdated(uint256 oldLimit, uint256 newLimit);
 
     /**
-     * @dev Constructor initializes the vault with asset and owner
+     * @notice Initialize the UserVault
      * @param asset_ Address of the underlying ERC20 asset
-     * @param owner_ Address of the vault owner
-     * @param factory_ Address of the VaultFactory contract
+     * @param name_ ERC20 share token name
+     * @param symbol_ ERC20 share token symbol
+     * @param initialOwner Address that will be granted ownership
      */
     constructor(
         address asset_,
-        address owner_,
-        address factory_
-    ) ERC20("Vault Share", "VSHARE") Ownable(owner_) {
-        require(asset_ != address(0), "Asset cannot be zero address");
-        require(owner_ != address(0), "Owner cannot be zero address");
-        require(factory_ != address(0), "Factory cannot be zero address");
-
+        string memory name_,
+        string memory symbol_,
+        address initialOwner
+    ) ERC20(name_, symbol_) Ownable(initialOwner) {
+        require(asset_ != address(0), "Asset address is zero");
         _asset = IERC20(asset_);
         _assetMetadata = IERC20Metadata(asset_);
-        _decimals = _assetMetadata.decimals();
-        factory = factory_;
+        _vaultDecimals = _assetMetadata.decimals();
+
+        // Unlimited by default
+        depositLimit = type(uint256).max;
     }
 
     /**
-     * @dev Returns the number of decimals for vault shares
-     * @return The number of decimals (matches underlying asset)
+     * @notice Returns the decimals of the share token (matches the underlying asset)
      */
-    function decimals() public view virtual override(ERC20, IERC20Metadata) returns (uint8) {
-        return _decimals;
+    function decimals() public view virtual override returns (uint8) {
+        return _vaultDecimals;
     }
 
     /*//////////////////////////////////////////////////////////////
-                            ASSET
+                                ERC-4626: ASSET
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Returns the address of the underlying asset
-     * @return The address of the asset token
+     * @notice Address of the underlying asset
      */
     function asset() public view virtual override returns (address) {
-        return address(_assetMetadata);
+        return address(_asset);
     }
 
     /**
-     * @dev Returns the total amount of assets managed by the vault
-     * @return The total amount of assets (balance + deployed to protocols)
-     * @notice Includes both vault balance and assets deployed to DeFi protocols
+     * @notice Total amount of underlying assets held by the vault
      */
     function totalAssets() public view virtual override returns (uint256) {
-        return _asset.balanceOf(address(this)) + _getTotalDeployedAssets();
-    }
-
-    /**
-     * @dev Get the vault's current asset balance (not deployed)
-     * @return The amount of assets held in the vault contract
-     */
-    function getVaultBalance() external view returns (uint256) {
         return _asset.balanceOf(address(this));
     }
 
-    /**
-     * @dev Internal function to calculate total deployed assets across protocols
-     * @return Total amount of assets deployed to protocols
-     */
-    function _getTotalDeployedAssets() internal view returns (uint256) {
-        uint256 total = 0;
-        for (uint256 i = 0; i < _supportedProtocols.length; i++) {
-            total += protocolDeployedAmounts[_supportedProtocols[i]];
-        }
-        return total;
-    }
-
-    /**
-     * @dev Get total deployed assets across all protocols
-     * @return Total amount of assets currently deployed
-     */
-    function getTotalDeployedAssets() external view returns (uint256) {
-        return _getTotalDeployedAssets();
-    }
-
     /*//////////////////////////////////////////////////////////////
-                            ACCOUNTING LOGIC
+                             OWNER CONTROLS
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Converts assets to shares
-     * @param assets The amount of assets to convert
-     * @return shares The equivalent amount of shares
-     * @notice First deposit uses 1:1 ratio, subsequent deposits are proportional
+     * @notice Set a cap on total assets the vault can manage
+     * @dev Set to type(uint256).max for "unlimited"
+     * @param newLimit New deposit limit
      */
-    function convertToShares(uint256 assets) public view virtual override returns (uint256 shares) {
-        uint256 supply = totalSupply();
-        return supply == 0 ? assets : (assets * supply) / totalAssets();
-    }
-
-    /**
-     * @dev Converts shares to assets
-     * @param shares The amount of shares to convert
-     * @return assets The equivalent amount of assets
-     */
-    function convertToAssets(uint256 shares) public view virtual override returns (uint256 assets) {
-        uint256 supply = totalSupply();
-        return supply == 0 ? shares : (shares * totalAssets()) / supply;
+    function setDepositLimit(uint256 newLimit) external onlyOwner {
+        // Prevent setting a cap lower than what's already managed
+        require(newLimit >= totalAssets(), "New limit below current assets");
+        uint256 old = depositLimit;
+        depositLimit = newLimit;
+        emit DepositLimitUpdated(old, newLimit);
     }
 
     /*//////////////////////////////////////////////////////////////
-                        DEPOSIT/WITHDRAW
+                         ERC-4626: DEPOSIT/WITHDRAW
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Deposits assets into the vault and mints shares to the receiver
-     * @param assets The amount of assets to deposit
-     * @param receiver The address that will receive the shares
-     * @return shares The amount of shares minted
-     * @notice Requires approval from caller to vault for asset transfer
+     * @notice Deposit assets into the vault and mint shares to receiver
+     * @param assets Amount of underlying assets to deposit
+     * @param receiver Address receiving the minted shares
+     * @return shares Amount of shares minted
      */
-    function deposit(uint256 assets, address receiver) 
-        public 
-        virtual 
-        override 
-        nonReentrant 
-        whenNotPaused 
-        returns (uint256 shares) 
+    function deposit(uint256 assets, address receiver)
+        public
+        virtual
+        override
+        nonReentrant
+        returns (uint256 shares)
     {
-        if (assets == 0) revert InvalidAmount();
-        if (receiver == address(0)) revert InvalidReceiver();
-        if (assets > maxDeposit(receiver)) revert ExceedsMaxDeposit();
-        
+        require(assets > 0, "Zero assets");
+        require(receiver != address(0), "Receiver zero");
+
+        // Enforce deposit cap
+        require(assets <= maxDeposit(receiver), "Deposit exceeds limit");
+
         shares = previewDeposit(assets);
-        if (shares == 0) revert InvalidAmount();
+        require(shares > 0, "Zero shares");
 
         _asset.safeTransferFrom(msg.sender, address(this), assets);
         _mint(receiver, shares);
@@ -199,32 +139,57 @@ contract UserVault is ERC20, IERC4626, Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev Withdraws assets from the vault by burning shares
-     * @param assets The amount of assets to withdraw
-     * @param receiver The address that will receive the assets
-     * @param owner The address that owns the shares
-     * @return shares The amount of shares burned
-     * @notice Requires allowance if caller is not the owner
+     * @notice Mint shares for receiver by depositing the required assets
+     * @param shares Amount of shares to mint
+     * @param receiver Address receiving the minted shares
+     * @return assets Amount of assets deposited
+     */
+    function mint(uint256 shares, address receiver)
+        public
+        virtual
+        override
+        nonReentrant
+        returns (uint256 assets)
+    {
+        require(shares > 0, "Zero shares");
+        require(receiver != address(0), "Receiver zero");
+
+        // Enforce deposit cap via maxMint
+        require(shares <= maxMint(receiver), "Mint exceeds limit");
+
+        assets = previewMint(shares);
+        require(assets > 0, "Zero assets");
+
+        _asset.safeTransferFrom(msg.sender, address(this), assets);
+        _mint(receiver, shares);
+
+        emit Deposit(msg.sender, receiver, assets, shares);
+    }
+
+    /**
+     * @notice Withdraw assets to receiver by burning owner's shares
+     * @param assets Amount of assets to withdraw
+     * @param receiver Address receiving withdrawn assets
+     * @param owner Address whose shares will be burned
+     * @return shares Amount of shares burned
      */
     function withdraw(
         uint256 assets,
         address receiver,
         address owner
-    ) 
-        public 
-        virtual 
-        override 
-        nonReentrant 
-        whenNotPaused 
-        returns (uint256 shares) 
+    )
+        public
+        virtual
+        override
+        nonReentrant
+        returns (uint256 shares)
     {
-        if (assets == 0) revert InvalidAmount();
-        if (receiver == address(0)) revert InvalidReceiver();
-        if (owner == address(0)) revert InvalidOwner();
-        if (assets > maxWithdraw(owner)) revert ExceedsMaxWithdraw();
+        require(assets > 0, "Zero assets");
+        require(receiver != address(0), "Receiver zero");
+        require(owner != address(0), "Owner zero");
 
         shares = previewWithdraw(assets);
-        if (shares == 0) revert InvalidAmount();
+        require(shares > 0, "Insufficient shares");
 
         if (msg.sender != owner) {
             _spendAllowance(owner, msg.sender, shares);
@@ -237,64 +202,33 @@ contract UserVault is ERC20, IERC4626, Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev Mints shares to the receiver by depositing assets
-     * @param shares The amount of shares to mint
-     * @param receiver The address that will receive the shares
-     * @return assets The amount of assets deposited
-     * @notice Requires approval from caller to vault for asset transfer
-     */
-    function mint(uint256 shares, address receiver) 
-        public 
-        virtual 
-        override 
-        nonReentrant 
-        whenNotPaused 
-        returns (uint256 assets) 
-    {
-        if (shares == 0) revert InvalidAmount();
-        if (receiver == address(0)) revert InvalidReceiver();
-        if (shares > maxMint(receiver)) revert ExceedsMaxMint();
-
-        assets = previewMint(shares);
-        if (assets == 0) revert InvalidAmount();
-
-        _asset.safeTransferFrom(msg.sender, address(this), assets);
-        _mint(receiver, shares);
-
-        emit Deposit(msg.sender, receiver, assets, shares);
-    }
-
-    /**
-     * @dev Redeems shares for assets
-     * @param shares The amount of shares to redeem
-     * @param receiver The address that will receive the assets
-     * @param owner The address that owns the shares
-     * @return assets The amount of assets withdrawn
-     * @notice Requires allowance if caller is not the owner
+     * @notice Redeem shares for assets to receiver
+     * @param shares Amount of shares to redeem
+     * @param receiver Address receiving the assets
+     * @param owner Address whose shares will be burned
+     * @return assets Amount of assets withdrawn
      */
     function redeem(
         uint256 shares,
         address receiver,
         address owner
-    ) 
-        public 
-        virtual 
-        override 
-        nonReentrant 
-        whenNotPaused 
-        returns (uint256 assets) 
+    )
+        public
+        virtual
+        override
+        nonReentrant
+        returns (uint256 assets)
     {
-        if (shares == 0) revert InvalidAmount();
-        if (receiver == address(0)) revert InvalidReceiver();
-        if (owner == address(0)) revert InvalidOwner();
-        if (shares > maxRedeem(owner)) revert ExceedsMaxRedeem();
+        require(shares > 0, "Zero shares");
+        require(receiver != address(0), "Receiver zero");
+        require(owner != address(0), "Owner zero");
 
         if (msg.sender != owner) {
             _spendAllowance(owner, msg.sender, shares);
         }
 
         assets = previewRedeem(shares);
-        if (assets == 0) revert InvalidAmount();
+        require(assets > 0, "Zero assets");
 
         _burn(owner, shares);
         _asset.safeTransfer(receiver, assets);
@@ -303,413 +237,166 @@ contract UserVault is ERC20, IERC4626, Ownable, ReentrancyGuard, Pausable {
     }
 
     /*//////////////////////////////////////////////////////////////
-                          DEPOSIT/WITHDRAW LOGIC
+                        ERC-4626: ACCOUNTING LOGIC
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Preview the amount of shares that would be minted for a deposit
-     * @param assets The amount of assets to deposit
-     * @return shares The amount of shares that would be minted
+     * @notice Convert assets to shares (rounding down)
+     * @param assets Amount of assets
+     * @return shares Equivalent shares
      */
-    function previewDeposit(uint256 assets) public view virtual override returns (uint256 shares) {
-        return convertToShares(assets);
-    }
-
-    /**
-     * @dev Preview the amount of assets required to mint shares
-     * @param shares The amount of shares to mint
-     * @return assets The amount of assets required
-     */
-    function previewMint(uint256 shares) public view virtual override returns (uint256 assets) {
+    function convertToShares(uint256 assets)
+        public
+        view
+        virtual
+        override
+        returns (uint256 shares)
+    {
         uint256 supply = totalSupply();
-        return supply == 0 ? shares : (shares * totalAssets()) / supply;
+        uint256 total = totalAssets();
+        return supply == 0 ? assets : Math.mulDiv(assets, supply, total, Math.Rounding.Down);
     }
 
     /**
-     * @dev Preview the amount of shares that would be burned for a withdrawal
-     * @param assets The amount of assets to withdraw
-     * @return shares The amount of shares that would be burned
+     * @notice Convert shares to assets (rounding down)
+     * @param shares Amount of shares
+     * @return assets Equivalent assets
      */
-    function previewWithdraw(uint256 assets) public view virtual override returns (uint256 shares) {
+    function convertToAssets(uint256 shares)
+        public
+        view
+        virtual
+        override
+        returns (uint256 assets)
+    {
         uint256 supply = totalSupply();
-        return supply == 0 ? assets : (assets * supply) / totalAssets();
+        uint256 total = totalAssets();
+        return supply == 0 ? shares : Math.mulDiv(shares, total, supply, Math.Rounding.Down);
     }
 
     /**
-     * @dev Preview the amount of assets that would be received for redeeming shares
-     * @param shares The amount of shares to redeem
-     * @return assets The amount of assets that would be received
+     * @notice Maximum assets that can be deposited for receiver
+     * @dev Enforces owner-controlled deposit limit
      */
-    function previewRedeem(uint256 shares) public view virtual override returns (uint256 assets) {
-        return convertToAssets(shares);
+    function maxDeposit(address /*receiver*/)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        uint256 limit = depositLimit;
+        if (limit == type(uint256).max) return type(uint256).max;
+
+        uint256 current = totalAssets();
+        if (current >= limit) return 0;
+        return limit - current;
     }
 
     /**
-     * @dev Returns the maximum amount of assets that can be deposited for a receiver
-     * @param receiver The address that will receive the shares
-     * @return The maximum amount of assets that can be deposited
-     * @notice Currently returns max uint256, can be overridden for limits
+     * @notice Maximum shares that can be minted for receiver
+     * @dev Derived from maxDeposit() based on current exchange rate
      */
-    function maxDeposit(address) public view virtual override returns (uint256) {
-        return type(uint256).max;
+    function maxMint(address receiver)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        uint256 maxAssets = maxDeposit(receiver);
+        uint256 supply = totalSupply();
+        if (supply == 0) {
+            // First mint: 1:1 mapping
+            return maxAssets;
+        }
+        // floor
+        return Math.mulDiv(maxAssets, supply, totalAssets(), Math.Rounding.Down);
     }
 
     /**
-     * @dev Returns the maximum amount of shares that can be minted for a receiver
-     * @param receiver The address that will receive the shares
-     * @return The maximum amount of shares that can be minted
-     * @notice Currently returns max uint256, can be overridden for limits
+     * @notice Maximum assets that can be withdrawn by owner
      */
-    function maxMint(address) public view virtual override returns (uint256) {
-        return type(uint256).max;
-    }
-
-    /**
-     * @dev Returns the maximum amount of assets that can be withdrawn by an owner
-     * @param owner The address that owns the shares
-     * @return The maximum amount of assets that can be withdrawn
-     */
-    function maxWithdraw(address owner) public view virtual override returns (uint256) {
+    function maxWithdraw(address owner)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
         return convertToAssets(balanceOf(owner));
     }
 
     /**
-     * @dev Returns the maximum amount of shares that can be redeemed by an owner
-     * @param owner The address that owns the shares
-     * @return The maximum amount of shares that can be redeemed
+     * @notice Maximum shares that can be redeemed by owner
      */
-    function maxRedeem(address owner) public view virtual override returns (uint256) {
+    function maxRedeem(address owner)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
         return balanceOf(owner);
     }
 
     /*//////////////////////////////////////////////////////////////
-                    PROTOCOL ALLOCATION MANAGEMENT
+                       ERC-4626: PREVIEW OPERATIONS
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Set allocation for a specific protocol
-     * @param protocol Name of the protocol (e.g., "Aave", "Compound")
-     * @param amount Amount of assets to allocate to the protocol
-     * @notice Only owner can set allocations
-     * @notice Allocation cannot exceed total assets in vault
+     * @notice Preview shares minted for a given asset deposit (round down)
      */
-    function setProtocolAllocation(string memory protocol, uint256 amount) external onlyOwner {
-        bytes memory protocolBytes = bytes(protocol);
-        if (protocolBytes.length == 0) revert InvalidProtocol();
-        if (amount > totalAssets()) revert AllocationExceedsAssets();
-
-        uint256 oldAmount = protocolAllocations[protocol];
-        protocolAllocations[protocol] = amount;
-
-        // Track protocol in supported list if not already present
-        bool exists = false;
-        for (uint256 i = 0; i < _supportedProtocols.length; i++) {
-            if (keccak256(bytes(_supportedProtocols[i])) == keccak256(bytes(protocol))) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists && amount > 0) {
-            _supportedProtocols.push(protocol);
-        }
-
-        emit ProtocolAllocationChanged(protocol, oldAmount, amount);
-    }
-
-    /**
-     * @dev Get allocation for a specific protocol
-     * @param protocol Name of the protocol
-     * @return The allocated amount for the protocol
-     */
-    function getProtocolAllocation(string memory protocol) external view returns (uint256) {
-        return protocolAllocations[protocol];
-    }
-
-    /**
-     * @dev Get total allocated amount across all protocols
-     * @return Total allocated amount
-     */
-    function getTotalAllocated() external view returns (uint256) {
-        uint256 total = 0;
-        for (uint256 i = 0; i < _supportedProtocols.length; i++) {
-            total += protocolAllocations[_supportedProtocols[i]];
-        }
-        return total;
-    }
-
-    /**
-     * @dev Get list of supported protocols
-     * @return Array of protocol names
-     */
-    function getSupportedProtocols() external view returns (string[] memory) {
-        return _supportedProtocols;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        PAUSE/UNPAUSE FUNCTIONALITY
-    //////////////////////////////////////////////////////////////*/
-
-    /**
-     * @dev Pause vault operations (owner only)
-     * @notice Prevents deposits, withdrawals, mints, and redeems
-     */
-    function pause() external onlyOwner {
-        _pause();
-        emit VaultPaused(address(this), msg.sender);
-    }
-
-    /**
-     * @dev Unpause vault operations (owner only)
-     * @notice Resumes all vault operations
-     */
-    function unpause() external onlyOwner {
-        _unpause();
-        emit VaultUnpaused(address(this), msg.sender);
-    }
-
-    /**
-     * @dev Check if vault is paused
-     * @return True if vault is paused
-     */
-    function isPaused() external view returns (bool) {
-        return paused();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            AAVE INTEGRATION
-    //////////////////////////////////////////////////////////////*/
-
-    // Aave state
-    address private aaveLendingPool;
-    address private aaveAToken;
-    uint256 private aaveBalance;
-
-    /**
-     * @dev Deploy assets to Aave lending pool
-     * @param amount Amount of assets to deploy to Aave
-     * @notice Only owner can deploy assets
-     * @notice Requires Aave address to be configured via factory
-     */
-    function deployToAave(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
-        if (amount == 0) revert InvalidAmount();
-        if (aaveLendingPool == address(0)) revert ProtocolNotConfigured();
-        if (amount > _asset.balanceOf(address(this))) revert InsufficientAssets();
-
-        // Update tracking
-        aaveBalance += amount;
-        protocolDeployedAmounts["Aave"] = aaveBalance;
-
-        // Transfer assets to Aave (placeholder - actual implementation requires Aave interface)
-        _asset.safeTransfer(aaveLendingPool, amount);
-
-        emit ProtocolDeployed("Aave", amount);
-    }
-
-    /**
-     * @dev Withdraw assets from Aave lending pool
-     * @param amount Amount of assets to withdraw from Aave
-     * @notice Only owner can withdraw assets
-     */
-    function withdrawFromAave(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
-        if (amount == 0) revert InvalidAmount();
-        if (amount > aaveBalance) revert InsufficientAssets();
-
-        // Update tracking
-        aaveBalance -= amount;
-        protocolDeployedAmounts["Aave"] = aaveBalance;
-
-        // Withdraw from Aave (placeholder - actual implementation requires Aave interface)
-        // In real implementation, would call Aave's withdraw function
-
-        emit ProtocolWithdrawn("Aave", amount);
-    }
-
-    /**
-     * @dev Get current Aave balance
-     * @return The amount of assets currently deployed to Aave
-     */
-    function getAaveBalance() external view returns (uint256) {
-        return aaveBalance;
-    }
-
-    /**
-     * @dev Set Aave lending pool address (internal, called by factory)
-     * @param lendingPool Address of Aave lending pool
-     */
-    function _setAaveAddress(address lendingPool) internal {
-        aaveLendingPool = lendingPool;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        COMPOUND INTEGRATION
-    //////////////////////////////////////////////////////////////*/
-
-    // Compound state
-    address private compoundCToken;
-    uint256 private compoundBalance;
-
-    /**
-     * @dev Deploy assets to Compound protocol
-     * @param amount Amount of assets to deploy to Compound
-     * @notice Only owner can deploy assets
-     * @notice Requires Compound address to be configured via factory
-     */
-    function deployToCompound(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
-        if (amount == 0) revert InvalidAmount();
-        if (compoundCToken == address(0)) revert ProtocolNotConfigured();
-        if (amount > _asset.balanceOf(address(this))) revert InsufficientAssets();
-
-        // Update tracking
-        compoundBalance += amount;
-        protocolDeployedAmounts["Compound"] = compoundBalance;
-
-        // Transfer assets to Compound (placeholder - actual implementation requires Compound interface)
-        _asset.safeTransfer(compoundCToken, amount);
-
-        emit ProtocolDeployed("Compound", amount);
-    }
-
-    /**
-     * @dev Withdraw assets from Compound protocol
-     * @param amount Amount of assets to withdraw from Compound
-     * @notice Only owner can withdraw assets
-     */
-    function withdrawFromCompound(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
-        if (amount == 0) revert InvalidAmount();
-        if (amount > compoundBalance) revert InsufficientAssets();
-
-        // Update tracking
-        compoundBalance -= amount;
-        protocolDeployedAmounts["Compound"] = compoundBalance;
-
-        // Withdraw from Compound (placeholder - actual implementation requires Compound interface)
-        // In real implementation, would call Compound's redeem function
-
-        emit ProtocolWithdrawn("Compound", amount);
-    }
-
-    /**
-     * @dev Get current Compound balance
-     * @return The amount of assets currently deployed to Compound
-     */
-    function getCompoundBalance() external view returns (uint256) {
-        return compoundBalance;
-    }
-
-    /**
-     * @dev Set Compound cToken address (internal, called by factory)
-     * @param cToken Address of Compound cToken contract
-     */
-    function _setCompoundAddress(address cToken) internal {
-        compoundCToken = cToken;
-    }
-
-    /**
-     * @dev Initialize protocol addresses from factory (called after deployment)
-     * @notice Can only be called by factory contract
-     */
-    function initializeProtocolAddresses() external {
-        require(msg.sender == factory, "Only factory can initialize");
-        
-        // Get protocol addresses from factory
-        // This requires VaultFactory to have getter functions
-        // For now, this is a placeholder that can be extended
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        ADDITIONAL VIEW FUNCTIONS
-    //////////////////////////////////////////////////////////////*/
-
-    /**
-     * @dev Get vault information summary
-     * @return assetAddress Address of underlying asset
-     * @return totalAssets_ Total assets in vault
-     * @return totalShares Total shares minted
-     * @return owner_ Address of vault owner
-     */
-    function getVaultInfo() 
-        external 
-        view 
-        returns (
-            address assetAddress,
-            uint256 totalAssets_,
-            uint256 totalShares,
-            address owner_
-        ) 
+    function previewDeposit(uint256 assets)
+        public
+        view
+        virtual
+        override
+        returns (uint256 shares)
     {
-        return (address(_assetMetadata), totalAssets(), totalSupply(), owner());
+        return convertToShares(assets);
     }
 
     /**
-     * @dev Get protocol deployment information
-     * @param protocol Name of the protocol
-     * @return allocated Allocation amount for protocol
-     * @return deployed Currently deployed amount to protocol
+     * @notice Preview assets required to mint given shares (round up)
      */
-    function getProtocolInfo(string memory protocol) 
-        external 
-        view 
-        returns (uint256 allocated, uint256 deployed) 
+    function previewMint(uint256 shares)
+        public
+        view
+        virtual
+        override
+        returns (uint256 assets)
     {
-        return (protocolAllocations[protocol], protocolDeployedAmounts[protocol]);
+        uint256 supply = totalSupply();
+        uint256 total = totalAssets();
+        return supply == 0 ? shares : Math.mulDiv(shares, total, supply, Math.Rounding.Up);
     }
 
     /**
-     * @dev Get all protocol allocations and deployments
-     * @return protocols Array of protocol names
-     * @return allocations Array of allocation amounts
-     * @return deployments Array of deployed amounts
+     * @notice Preview shares burned to withdraw given assets (round up)
      */
-    function getAllProtocolInfo() 
-        external 
-        view 
-        returns (
-            string[] memory protocols,
-            uint256[] memory allocations,
-            uint256[] memory deployments
-        ) 
+    function previewWithdraw(uint256 assets)
+        public
+        view
+        virtual
+        override
+        returns (uint256 shares)
     {
-        uint256 length = _supportedProtocols.length;
-        protocols = new string[](length);
-        allocations = new uint256[](length);
-        deployments = new uint256[](length);
-
-        for (uint256 i = 0; i < length; i++) {
-            protocols[i] = _supportedProtocols[i];
-            allocations[i] = protocolAllocations[_supportedProtocols[i]];
-            deployments[i] = protocolDeployedAmounts[_supportedProtocols[i]];
-        }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        OWNER ACCESS CONTROL
-    //////////////////////////////////////////////////////////////*/
-
-    /**
-     * @dev Transfer ownership of the vault
-     * @param newOwner Address of the new owner
-     * @notice Only current owner can transfer ownership
-     * @notice New owner cannot be zero address
-     */
-    function transferOwnership(address newOwner) public override onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
-        super.transferOwnership(newOwner);
+        uint256 supply = totalSupply();
+        uint256 total = totalAssets();
+        return supply == 0 ? assets : Math.mulDiv(assets, supply, total, Math.Rounding.Up);
     }
 
     /**
-     * @dev Renounce ownership of the vault
-     * @notice Only owner can renounce ownership
-     * @notice This action is irreversible
+     * @notice Preview assets received for redeeming given shares (round down)
      */
-    function renounceOwnership() public override onlyOwner {
-        super.renounceOwnership();
+    function previewRedeem(uint256 shares)
+        public
+        view
+        virtual
+        override
+        returns (uint256 assets)
+    {
+        return convertToAssets(shares);
     }
-
-    // Events
-    event ProtocolAllocationChanged(string indexed protocol, uint256 oldAmount, uint256 newAmount);
-    event ProtocolDeployed(string indexed protocol, uint256 amount);
-    event ProtocolWithdrawn(string indexed protocol, uint256 amount);
-    event VaultPaused(address indexed vault, address indexed pausedBy);
-    event VaultUnpaused(address indexed vault, address indexed unpausedBy);
 }
-
