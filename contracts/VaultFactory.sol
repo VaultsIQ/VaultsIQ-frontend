@@ -85,3 +85,26 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         emit UserRegistered(msg.sender, block.timestamp);
     }
 
+    /**
+     * @dev Check if a user is registered
+     * @param user Address to check
+     * @return bool True if user is registered
+     */
+    function isUserRegistered(address user) external view returns (bool) {
+        return registeredUsers[user];
+    }
+
+    /**
+     * @dev Get user information
+     * @param user Address of the user
+     * @return username User's username
+     * @return bio User's bio
+     * @return timestamp Registration timestamp
+     */
+    function getUserInfo(address user) external view returns (string memory username, string memory bio, uint256 timestamp) {
+        if (!registeredUsers[user]) {
+            revert UserNotRegistered(user);
+        }
+        return (userUsernames[user], userBios[user], userRegistrationTimestamps[user]);
+    }
+
