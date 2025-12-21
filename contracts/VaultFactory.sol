@@ -108,3 +108,39 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         return (userUsernames[user], userBios[user], userRegistrationTimestamps[user]);
     }
 
+    /**
+     * @dev Get user's username
+     * @param user Address of the user
+     * @return username User's username
+     */
+    function getUserUsername(address user) external view returns (string memory) {
+        if (!registeredUsers[user]) {
+            revert UserNotRegistered(user);
+        }
+        return userUsernames[user];
+    }
+
+    /**
+     * @dev Get user's bio
+     * @param user Address of the user
+     * @return bio User's bio
+     */
+    function getUserBio(address user) external view returns (string memory) {
+        if (!registeredUsers[user]) {
+            revert UserNotRegistered(user);
+        }
+        return userBios[user];
+    }
+
+    /**
+     * @dev Get user's registration timestamp
+     * @param user Address of the user
+     * @return timestamp Registration timestamp
+     */
+    function getRegistrationTimestamp(address user) external view returns (uint256) {
+        if (!registeredUsers[user]) {
+            revert UserNotRegistered(user);
+        }
+        return userRegistrationTimestamps[user];
+    }
+
