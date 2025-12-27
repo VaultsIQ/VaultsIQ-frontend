@@ -52,6 +52,11 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @notice Users must register before creating vaults
      */
     function registerUser(string memory username, string memory bio) external nonReentrant {
+        // Prevent zero address registration
+        if (msg.sender == address(0)) {
+            revert InvalidUsername("Cannot register zero address");
+        }
+
         // Check if user is already registered
         if (registeredUsers[msg.sender]) {
             revert AlreadyRegistered(msg.sender);
